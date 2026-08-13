@@ -7,6 +7,7 @@ package amplify
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	tfyaml "github.com/hashicorp/terraform-provider-aws/internal/yaml"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 
@@ -194,10 +196,11 @@ func resourceApp() *schema.Resource {
 					ValidateFunc: verify.ValidARN,
 				},
 				"custom_headers": {
-					Type:         schema.TypeString,
-					Optional:     true,
-					Computed:     true,
-					ValidateFunc: validation.StringLenBetween(1, 25000),
+					Type:             schema.TypeString,
+					Optional:         true,
+					Computed:         true,
+					ValidateFunc:     validation.StringLenBetween(1, 25000),
+					DiffSuppressFunc: suppressAmplifyCustomHeadersDiff,
 				},
 				"custom_rule": {
 					Type:     schema.TypeList,
@@ -940,4 +943,45 @@ func flattenProductionBranch(apiObject *types.ProductionBranch) map[string]any {
 	}
 
 	return tfMap
+}
+
+// suppressAmplifyCustomHeadersDiff works around GetApp/UpdateApp returning custom_headers in different shapes.
+func suppressAmplifyCustomHeadersDiff(k, old, new string, d *schema.ResourceData) bool {
+	if old == "" || new == "" {
+		return old == new
+	}
+
+	oldRules, oldErr := normalizeAmplifyCustomHeaders(old)
+	newRules, newErr := normalizeAmplifyCustomHeaders(new)
+	if oldErr != nil || newErr != nil {
+		return false
+	}
+
+	oldJSON, err := json.Marshal(oldRules)
+	if err != nil {
+		return false
+	}
+	newJSON, err := json.Marshal(newRules)
+	if err != nil {
+		return false
+	}
+
+	return verify.JSONBytesEqual(oldJSON, newJSON)
+}
+
+// normalizeAmplifyCustomHeaders unwraps a custom_headers value to its header-rule list, wrapped or bare.
+func normalizeAmplifyCustomHeaders(s string) (any, error) {
+	var wrapped struct {
+		CustomHeaders any `yaml:"customHeaders" json:"customHeaders"`
+	}
+	if err := tfyaml.DecodeFromString(s, &wrapped); err == nil && wrapped.CustomHeaders != nil {
+		return wrapped.CustomHeaders, nil
+	}
+
+	var bare any
+	if err := tfyaml.DecodeFromString(s, &bare); err != nil {
+		return nil, err
+	}
+
+	return bare, nil
 }
